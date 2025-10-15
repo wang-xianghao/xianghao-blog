@@ -29,7 +29,7 @@ jobs:
               uses: peaceiris/actions-gh-pages@v3
               with:
                   PERSONAL_TOKEN: ${{ secrets.PERSONAL_TOKEN }}
-                  EXTERNAL_REPOSITORY: wang-xianghao/wang-xianghao.github.io
+                  EXTERNAL_REPOSITORY: wang-xianghao/xianghao-blog-websites
                   PUBLISH_BRANCH: main
                   PUBLISH_DIR: ./public
                   commit_message: ${{ github.event.head_commit.message }}
