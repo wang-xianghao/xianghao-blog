@@ -25,15 +25,26 @@ PxgCudaBroadPhaseSap::update(...)
 ```
 
 ## 数据结构
-### `mBoxFpBoundsBuf: PxgTypedCudaBuffer<PxBounds3>`
+### `mBPDescBuf: PxgTypedCudaBuffer<PxgBroadPhaseDesc>`
+
+宽相碰撞所需要的大部分数据buffer的入口和控制参数，并不存储实际数据。可以在`PxgCudaBroadPhaseSap::updateDescriptor`查看描述符各个成员和`PxgCUDABroadPhaseSap`对象成员的对应关系。
+
+某些算子会接收一个描述符从描述符里面拿到需要的buffer的指针，有些算子会直接从接收buffer的指针，有些会混用这两种参数传递策略。主要因为以下原因：
+- CUDA对于传入参数的总大小有限制，较新架构为32K，而老架构仅为4K。
+- 描述符填好一次可以复用，避免每个kernel都从host传入大量指针。
+- 接口稳定，新增加的参数可以通过描述符访问，避免频繁修改接口和参数爆炸。
+
+对于之后的buffer，我们同时标注它的指针名称以及通过描述符间接访问的形式。
+
+### `updateData_fpBounds -> mBoxFpBoundsBuf: PxgTypedCudaBuffer<PxBounds3>`
 
 所有物体的AABB盒子，每个盒子由6个float组成（min坐标和max坐标）。
 
-### `mNewIntegerBoundsBuf: PxgTypedCudaBuffer<PxgIntegerAABB>`
+### `newIntegerBounds -> mNewIntegerBoundsBuf: PxgTypedCudaBuffer<PxgIntegerAABB>`
 
 所有物体量化后的AABB盒子，每个盒子由6个无符号32位整数组成。
 
-### `mBoxPtHandlesBuf: PxgCudaBufferN<6>`
+### `desc.boxHandles -> mBoxPtHandlesBuf: PxgCudaBufferN<6>`
 
 这是一个双缓冲结构，0..2存储当前帧的xyz轴handle数组，3..5存储上一帧的xyz轴打包handle数组。每个打包handle数组是按照投影顺序排列好的。
 
@@ -43,21 +54,22 @@ PxgCudaBroadPhaseSap::update(...)
 - bit 1：该端点对应的投影是否为本帧新创建的。
 - bit 0：投影的min=1，max=0。
 
-### `mBoxSapBox1DBuf: PxgCudaBufferN<3>`
+### `desc.boxSapBox1D -> mBoxSapBox1DBuf: PxgCudaBufferN<3>`
 
 分别存储xyz轴上投影的端点下标数组。数组元素的类型是`PxgSapBox`，在`handle`位置的元素代表对应物体在坐标轴上min/max端点在排序后投影数组里的下标。
 
 我们发现 `mBoxPtHandlesBuf`和`mBoxSapBox1DBuf`可以实现双向查询。
 
-### `mRemovedHandlesBuf: PxgTypedCudaBuffer<PxU32> `
-要被移除的物体的handle。
+### `desc.updateData_removedHandles -> mRemovedHandlesBuf: PxgTypedCudaBuffer<PxU32> `
+
+要被移除物体的handle组成的数组。
 
 
 ## 算子解析
 
 ### `translateAABBsKernel() -> translateAABBsLaunch()`
 
-这个算子将float表示的AABB映射到uint32表示的AABB，并保持空间内相对位置不变，方便之后步骤的基数排序。一个AABB包围盒由6个float组成，每8个线程负责一个AABB，多余的2个线程闲置。这个算子通过如下步骤转化为6个uint32_t组成的包围盒。
+这个算子将float表示的AABB（`mBoxFpBoundsBuf`）映射到uint32表示的AABB（`mNewIntegerBoundsBuf`），并保持空间内相对位置不变，方便之后步骤的基数排序。一个AABB包围盒由6个float组成，每8个线程负责一个AABB，多余的2个线程闲置。这个算子通过如下步骤转化为6个uint32_t组成的包围盒。
 
 1. 对每个float执行`encodeFloat()`：首先，直接把float的位当作uint32_t。正浮点数的二进制表示对应的整数保留了原本的大小关系。对于负浮点数，我们按位取反，得到后二进制对应的整数也维持了负浮点数的大小关系。因为正浮点数总是大于负浮点数的，我们将正浮点数的二进制表示最高位设为1.
 
@@ -78,3 +90,5 @@ PxgCudaBroadPhaseSap::update(...)
     PxU32 out = b | mask;
     ```
 4. 此外，该算子还支持设置contact distance来扩张边界和envIDShift设置环境ID，先略过。
+
+### `markRemovedPairsKernel() -> markRemovedPairsLaunch()` 
